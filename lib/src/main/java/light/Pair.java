@@ -1,5 +1,7 @@
 package light;
 
+import java.util.function.Function;
+
 public class Pair<A, B> {
   public A first;
   public B second;
@@ -13,6 +15,14 @@ public class Pair<A, B> {
 
   @Override
   public String toString() {
-    return "" + first + ": " + second;
+    return "(" + first + ", " + second + ")";
+  }
+
+  public <C> Pair<C, B> first(Function<A, C> f) {
+    return Pair.of(f.apply(first), second);
+  }
+
+  public <C> Pair<A, C> second(Function<B, C> f) {
+    return Pair.of(first, f.apply(second));
   }
 }

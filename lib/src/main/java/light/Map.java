@@ -1,8 +1,10 @@
 package light;
 
-import java.util.Stack;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 // a port from https://hackage.haskell.org/package/containers-0.6.5.1/docs/src/Data.Map.Internal.html#Map
 
@@ -17,30 +19,32 @@ public class Map<K extends Comparable<K>, V> {
     return size == 0;
   }
 
-  private Map(int size, K k, V v, Map<K, V> left, Map<K, V> right) {
-    this.size = size;
-    this.k = k;
-    this.v = v;
-    this.left = left;
+  private Map(K k, V v, Map<K, V> left, Map<K, V> right) {
+    this.size  = 1 + left.size + right.size;
+    this.k     = k;
+    this.v     = v;
+    this.left  = left;
     this.right = right;
   }
 
+  private Map() {
+    this.size  = 0;
+    this.k     = null;
+    this.v     = null;
+    this.left  = null;
+    this.right = null;
+  }
+
   public static <K extends Comparable<K>, V> Map<K, V> empty() {
-    return new Map<K, V>(0, null, null, null, null);
+    return new Map<K, V>();
   }
 
-  public static <K extends Comparable<K>, V> Map<K, V> pair(K k, V v) {
-    return new Map<K,V>(1, k, v, empty(), empty());
+  public static <K extends Comparable<K>, V> Map<K, V> of(K k, V v) {
+    return new Map<K,V>(k, v, empty(), empty());
   }
 
-  public Maybe<V> lookup(K k) {
-    for (var self = this; !self.isEmpty();) {
-      final var cmp = k.compareTo(self.k);
-      if (cmp < 0) self = self.left;
-      if (cmp > 0) self = self.right;
-      return Maybe.just(self.v);
-    }
-    return Maybe.nothing();
+  public static <K extends Comparable<K>, V> Map<K, V> of(K k, V v, Map<K, V> l, Map<K, V> r) {
+    return new Map<K,V>(k, v, l, r);
   }
 
   public boolean member(K k) {
@@ -48,151 +52,263 @@ public class Map<K extends Comparable<K>, V> {
   }
 
   public Map<K, V> insert(K k, V v) {
-    final var cmp = k.compareTo(this.k);
-    if (cmp < 0) {
-      return balance()
+    return match(
+      () -> of(k, v, empty(), empty()),
+      (size, k1, v1, left, right) -> {
+        switch (Compare.the(k, k1)) {
+          case LT: return rebalance(k1, v1, left.insert(k, v), right);
+          case GT: return rebalance(k1, v1, left,              right.insert(k, v));
+          default: return of       (k,  v,  left,              right);
+        }
+      }
+    );
+  }
+
+  public Map<K, V> delete(K k) {
+    return match(
+      () -> empty(),
+      (size, k1, v1, left, right) -> {
+        switch (Compare.the(k, k1)) {
+          case LT: return rebalance(k1, v1, left.delete(k), right);
+          case GT: return rebalance(k1, v1, left,           right.delete(k));
+          default: return glue(left, right);
+        }
+      }
+    );
+  }
+
+  public static <K extends Comparable<K>, V> Map<K, V> glue(Map<K, V> left, Map<K, V> right) {
+    if (left .isEmpty()) return right;
+    if (right.isEmpty()) return left;
+    if (left.size > right.size) {
+      var maxView = left.maxView();
+      return rebalance(maxView.first, maxView.second.first, maxView.second.second, right);
+    } else {
+      var minView = right.minView();
+      return rebalance(minView.first, minView.second.first, left, minView.second.second);
     }
   }
 
-/*
+  private Pair<K, Pair<V, Map<K, V>>> maxView() {
+    if (right.isEmpty()) return Pair.of(k, Pair.of(v, left));
+    var view = right.maxView();
+    return view.second(p -> p.second(r -> rebalance(k, v, left, r)));
+  }
 
-insert :: Ord k => k -> a -> Map k a -> Map k a
-insert k
-kx0 = go kx0 kx0
-  where
-    -- Unlike insertR, we only get sharing here
-    -- when the inserted value is at the same address
-    -- as the present value. We try anyway; this condition
-    -- seems particularly likely to occur in 'union'.
-    go :: Ord k => k -> k -> a -> Map k a -> Map k a
-    go orig !_  x Tip = singleton (lazy orig) x
-    go orig !kx x t@(Bin sz ky y l r) =
-        case compare kx ky of
-            LT | l' `ptrEq` l -> t
-               | otherwise -> balanceL ky y l' r
-               where !l' = go orig kx x l
-            GT | r' `ptrEq` r -> t
-               | otherwise -> balanceR ky y l r'
-               where !r' = go orig kx x r
-            EQ | x `ptrEq` y && (lazy orig `seq` (orig `ptrEq` ky)) -> t
-               | otherwise -> Bin sz (lazy orig) x l r
+  private Pair<K, Pair<V, Map<K, V>>> minView() {
+    if (left.isEmpty()) return Pair.of(k, Pair.of(v, right));
+    var view = left.minView();
+    return view.second(p -> p.second(l -> rebalance(k, v, l, right)));
+  }
 
--- The balance function is equivalent to the following:
---
---   balance :: k -> a -> Map k a -> Map k a -> Map k a
---   balance k x l r
---     | sizeL + sizeR <= 1    = Bin sizeX k x l r
---     | sizeR > delta*sizeL   = rotateL k x l r
---     | sizeL > delta*sizeR   = rotateR k x l r
---     | otherwise             = Bin sizeX k x l r
---     where
---       sizeL = size l
---       sizeR = size r
---       sizeX = sizeL + sizeR + 1
---
---   rotateL :: a -> b -> Map a b -> Map a b -> Map a b
---   rotateL k x l r@(Bin _ _ _ ly ry) | size ly < ratio*size ry = singleL k x l r
---                                     | otherwise               = doubleL k x l r
---
---   rotateR :: a -> b -> Map a b -> Map a b -> Map a b
---   rotateR k x l@(Bin _ _ _ ly ry) r | size ry < ratio*size ly = singleR k x l r
---                                     | otherwise               = doubleR k x l r
---
---   singleL, singleR :: a -> b -> Map a b -> Map a b -> Map a b
---   singleL k1 x1 t1 (Bin _ k2 x2 t2 t3)  = bin k2 x2 (bin k1 x1 t1 t2) t3
---   singleR k1 x1 (Bin _ k2 x2 t1 t2) t3  = bin k2 x2 t1 (bin k1 x1 t2 t3)
---
---   doubleL, doubleR :: a -> b -> Map a b -> Map a b -> Map a b
---   doubleL k1 x1 t1 (Bin _ k2 x2 (Bin _ k3 x3 t2 t3) t4) = bin k3 x3 (bin k1 x1 t1 t2) (bin k2 x2 t3 t4)
---   doubleR k1 x1 (Bin _ k2 x2 t1 (Bin _ k3 x3 t2 t3)) t4 = bin k3 x3 (bin k2 x2 t1 t2) (bin k1 x1 t3 t4)
-*/
+  public Map<K, V> change(K k, Maybe<V> v) {
+    return v.fold(
+      () -> delete(k),
+      v1 -> insert(k, v1)
+    );
+  }
 
-  // private List<Pair<K, V>> raw;
+  public <C> C match(Supplier<C> tip, FiveFunction<Integer, K, V, Map<K, V>, Map<K, V>, C> bin) {
+    if (isEmpty()) {
+      return tip.get();
+    } else {
+      return bin.apply(size, k, v, left, right);
+    }
+  }
 
-  // public static <K, V> Map<K, V> empty() {
-  //   var m = new Map<K, V>();
-  //   m.raw = List.empty();
-  //   return m;
-  // }
+  private <C> C matchBin(FiveFunction<Integer, K, V, Map<K, V>, Map<K, V>, C> bin) {
+    if (isEmpty()) {
+      return null; // shouldn't happen
+    } else {
+      return bin.apply(size, k, v, left, right);
+    }
+  }
 
-  // public static <K, V> Map<K, V> makeFrom(List<Pair<K, V>> raw) {
-  //   var m = Map.<K, V>empty();
-  //   m.raw = raw;
-  //   return m;
-  // }
+  private static int delta = 3;
+  private static int ratio = 2;
 
-  // public static <K, V> Map<K, V> of(Pair<K, V>... as) {
-  //   return makeFrom(List.of(as));
-  // }
+  private static <K extends Comparable<K>, V> Map<K, V> rebalance(K k, V v, Map<K, V> l, Map<K, V> r) {
+    if (l.size + r.size < 3)     return new Map<K, V>(k, v, l, r);
+    if (l.size > delta * r.size) return rotateRight(k, v, l, r);
+    if (r.size > delta * l.size) return rotateLeft (k, v, l, r);
+    return new Map<K, V>(k, v, l, r);
+  }
 
-  // public Map<K, V> insert(K k, V v) {
-  //   return makeFrom(
-  //     List.<Pair<K, V>>cons(
-  //       Pair.of(k, v),
-  //       delete(k).raw
-  //     )
-  //   );
-  // }
+  private static <K extends Comparable<K>, V> Map<K, V> rotateLeft(K k1, V v1, Map<K, V> l1, Map<K, V> r1) {
+    return
+      r1.matchBin((s2, k2, v2, l2, r2) ->
+        l2.size < ratio * r2.size
+          ? new Map<K, V>(k2, v2, new Map<K, V>(k1, v1, l1, l2), r2)
+          : r2.matchBin((s3, k3, v3, l3, r3) ->
+              new Map<K, V>(k2, v2,
+                new Map<K, V>(k1, v1, l1, l2),
+                new Map<K, V>(k3, v3, l3, r3)
+              )
+            )
+      );
+  }
 
-  // public Map<K, V> change(K k, Maybe<V> v) {
-  //   return v.isNothing() ? delete(k) : insert(k, v.fromJust);
-  // }
+  private static <K extends Comparable<K>, V> Map<K, V> rotateRight(K k1, V v1, Map<K, V> l1, Map<K, V> r1) {
+    return
+      l1.matchBin((s2, k2, v2, l2, r2) ->
+        r2.size < ratio * l2.size
+          ? new Map<K, V>(k2, v2, new Map<K, V>(k1, v1, l2, r2), r1)
+          : l2.matchBin((s3, k3, v3, l3, r3) ->
+              new Map<K, V>(k2, v2,
+                new Map<K, V>(k1, v1, l3, r3),
+                new Map<K, V>(k3, v3, r2, r1)
+              )
+            )
+      );
+  }
 
-  // public Map<K, V> delete(K k) {
-  //   return makeFrom(raw.filter(p -> p.first.hashCode() != k.hashCode()));
-  // }
+  public static <K extends Comparable<K>, V> Map<K, V> of(List<Pair<K, V>> raw) {
+    return raw.foldl(empty(), (p, m) -> m.insert(p.first, p.second));
+  }
 
-  // public Maybe<V> lookup(K k) {
-  //   var slice = raw.filter(p -> p.first.hashCode() == k.hashCode());
-  //   if (slice.isEmpty()) {
-  //     return Maybe.<V>nothing();
-  //   } else {
-  //     return Maybe.<V>just(slice.head.second);
-  //   }
-  // }
+  @SafeVarargs
+  public static <K extends Comparable<K>, V> Map<K, V> of(Pair<K, V>... as) {
+    return of(List.of(as));
+  }
 
-  // public <W> Map<K, W> map(BiFunction<K, V, W> f) {
-  //   return makeFrom(
-  //     raw.map(p ->
-  //       Pair.of(p.first, f.apply(p.first, p.second))
-  //     )
-  //   );
-  // }
+  public Integer foreach(BiFunction<K, V, Integer> step) {
+    return match(
+      () -> 0,
+      (Integer s, K k, V v, Map<K, V> l, Map<K, V> r) -> {
+        l.foreach(step);
+        step.apply(k, v);
+        r.foreach(step);
+        return 0;
+      }
+    );
+  }
 
-  // public Map<K, V> filter(BiPredicate<K, V> f) {
-  //   return makeFrom(
-  //     raw.filter(p ->
-  //       f.test(p.first, p.second)
-  //     )
-  //   );
-  // }
+  public Integer foreachBack(BiFunction<K, V, Integer> step) {
+    return match(
+      () -> 0,
+      (Integer s, K k, V v, Map<K, V> l, Map<K, V> r) -> {
+        r.foreachBack(step);
+        step.apply(k, v);
+        l.foreachBack(step);
+        return 0;
+      }
+    );
+  }
 
-  // public <C> C foldlWithKey(C start, TriFunction<K, V, C, C> f) {
-  //   return raw.foldl(start, (p, acc) -> f.apply(p.first, p.second, acc));
-  // }
+  public Map<K, V> filterWithKey(BiPredicate<K, V> p) {
+    Ref<Map<K, V>> acc = Ref.of(empty());
+    foreach((k, v) -> {
+      if (p.test(k, v)) {
+        acc.a = acc.a.insert(k, v);
+      }
+      return 0;
+    });
+    return acc.a;
+  }
 
-  // public Map<K, V> leftJoin(Map<K, V> m, BiFunction<V, V, Maybe<V>> op) {
-  //   return foldlWithKey(Map.<K, V>empty(), (k, v, acc) -> {
-  //     var v1 = m.lookup(k);
-  //     if (v1.isNothing()) {
-  //       return acc.insert(k, v);
-  //     } else {
-  //       return acc.change(k, op.apply(v, v1.fromJust));
-  //     }
-  //   });
-  // }
+  public Map<K, V> filter(Predicate<V> p) {
+    return filterWithKey((k, v) -> p.test(v));
+  }
 
-  // public List<K> keys() {
-  //   return foldlWithKey(List.empty(), (k, v, list) -> List.cons(k, list));
-  // }
+  public <C> C foldlWithKey(C start, TriFunction<K, V, C, C> step) {
+    Ref<C> acc = Ref.of(start);
+    foreach((k, v) -> {
+      acc.a = step.apply(k, v, acc.a);
+      return 0;
+    });
+    return acc.a;
+  }
 
-  // public Map<K, V> crossJoin(Map<K, V> m, BiFunction<Maybe<V>, Maybe<V>, Maybe<V>> f) {
-  //   var ks = keys().append(m.keys()).unique();
-  //   return ks.foldl(Map.empty(), (k, res) -> res.change(k, f.apply(lookup(k), m.lookup(k))));
-  // }
+  public <C> C foldl(C start, BiFunction<V, C, C> step) {
+    return foldlWithKey(start, (k, v, c) -> step.apply(v, c));
+  }
 
-  // @Override
-  // public String toString() {
-  //   return "map " + raw;
-  // }
+  public <C> C fold(C tip, FourFunction<K, V, C, C, C> reducer) {
+    return match(
+      () -> tip,
+      (s, k, v, l, r) -> reducer.apply(
+        k, v,
+        l.fold(tip, reducer),
+        r.fold(tip, reducer)
+      )
+    );
+  }
+
+  public <V1> Map<K, V1> mapWithKey(BiFunction<K, V, V1> f) {
+    return fold(
+      empty(),
+      (k, v, l, r) -> new Map<>(k, f.apply(k, v), l, r)
+    );
+  }
+
+  public <V1> Map<K, V1> map(Function<V, V1> f) {
+    return mapWithKey((k, v) -> f.apply(v));
+  }
+
+  public Maybe<V> lookup(K k1) {
+    return match(
+      () -> Maybe.<V>nothing(),
+      (s, k, v, l, r) -> {
+        switch (Compare.the(k1, k)) {
+          case LT: return l.lookup(k1);
+          case GT: return r.lookup(k1);
+          default: return Maybe.just(v);
+        }
+      }
+    );
+  }
+
+  public Integer height() {
+    return fold(0, (k, v, l, r) -> Math.max(l, r) + 1);
+  }
+
+  @Override
+  public String toString() {
+    return "{" + foldlWithKey("", (k, v, s) -> s + k + ": " + v + ", ") + "}";
+  }
+
+  public Set<K> keys() {
+    return Set.of(this);
+  }
+
+  public Map<K, V> mergeWith(Map<K, V> map, BiFunction<V, V, V> merger) {
+    return mergeWithKey(map, (k, v1, v) -> merger.apply(v1, v));
+  }
+
+  public Map<K, V> merge(Map<K, V> map) {
+    return mergeWith(map, (v1, v) -> v);
+  }
+
+  public Map<K, V> mergeWithKey(Map<K, V> map, TriFunction<K, V, V, V> merger) {
+    return map.foldlWithKey(
+      this,
+      (k, v, acc) ->
+        acc.insert(
+          k,
+          acc.lookup(k).fold(
+            () -> v,
+            v1 -> merger.apply(k, v1, v)
+          )
+        )
+    );
+  }
+
+  public static <K extends Comparable<K>, V> Map<K, V> tabulate(K k, Function<K, Maybe<K>> genIndex, Function<K, V> tabulator) {
+    var acc = Map.<K, V>empty();
+    for (var k1 = Maybe.just(k); k1.isJust(); k1 = k1.then(genIndex)) {
+      var k2 = k1.fromJust;
+      var v  = tabulator.apply(k2);
+      acc = acc.insert(k2, v);
+    }
+    return acc;
+  }
+
+  public List<Pair<K, V>> toList() {
+    Ref<List<Pair<K, V>>> acc = Ref.of(List.empty());
+    foreachBack((k, v) -> {
+      acc.a = List.cons(Pair.of(k, v), acc.a);
+      return 0;
+    });
+    return acc.a;
+  }
 }

@@ -14,27 +14,34 @@ public class Spectrum {
     return of(Pair.of(c, i));
   }
 
+  @SafeVarargs
   public static Spectrum of(Pair<Color, Integer>... colors) {
-    return makeFrom(Map.makeFrom(List.of(colors)));
+    return of(Map.of(List.of(colors)));
   }
 
-  public static Spectrum makeFrom(Map<Color, Integer> raw) {
+  public static Spectrum of(Map<Color, Integer> raw) {
     var s = empty();
     s.raw = raw;
     return s;
   }
 
   public Spectrum half() {
-    return makeFrom(raw.map((k, v) -> v / 2));
+    return of(raw.map(v -> v / 2));
   }
 
   public Spectrum add(Spectrum s) {
-    return makeFrom(raw.crossJoin(s.raw, (mv, mv1) -> {
-      var v = mv.orElse(0);
-      var v1 = mv1.orElse(0);
-      var vN = v + v1;
-      return vN == 0 ? Maybe.nothing() : Maybe.just(vN);
-    }));
+    return of(raw.mergeWith(s.raw, (mv, mv1) -> mv + mv1).filter(x -> x != 0));
+  }
+
+  public Pair<Spectrum, Spectrum> split(Color color) {
+    Map<Color, Integer> with = raw.lookup(color).fold(
+      ()        -> Map.empty(),
+      intensity -> Map.of(Pair.of(color, intensity))
+    );
+
+    Map<Color, Integer> without = raw.delete(color);
+
+    return Pair.of(Spectrum.of(with), Spectrum.of(without));
   }
 
   @Override

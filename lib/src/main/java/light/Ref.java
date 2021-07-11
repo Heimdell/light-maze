@@ -6,4 +6,8 @@ public class Ref<A> {
   public Ref(A a) {
     this.a = a;
   }
+
+  public static <A> Ref<A> of(A a) {
+    return new Ref<A>(a);
+  }
 }

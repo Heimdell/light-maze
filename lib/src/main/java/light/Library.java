@@ -5,14 +5,12 @@ package light;
 
 public class Library {
     public static void main(String[] args) {
-        var m = Map.of(Pair.of(1, "2"), Pair.of(2, "3"), Pair.of(3, "4"));
-        System.out.println(m.insert(2, "foo").lookup(2));
-        System.out.println(m);
-        System.out.println(List.of(1,2,3).append(List.of(2,3,4)).unique());
+        Spectrum ray = Spectrum.pure(Color.FIRE, 2)
+            .add(Spectrum.pure(Color.PUSH, 2)
+            .add(Spectrum.pure(Color.FIRE, 4)));
+
         System.out.println(
-            Spectrum.pure(Color.FIRE, 2)
-                .add(Spectrum.pure(Color.PUSH, 2)
-                .add(Spectrum.pure(Color.FIRE, 4)))
+            ray.split(Color.FIRE)
         );
     }
 }

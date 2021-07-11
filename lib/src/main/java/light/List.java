@@ -21,6 +21,7 @@ public class List<A> {
     return list;
   }
 
+  @SafeVarargs
   public static <A> List<A> of(A... as) {
     var acc = List.<A>empty();
     for (int i = as.length - 1; i >= 0; i--) {
@@ -71,11 +72,8 @@ public class List<A> {
     return acc.a;
   }
 
-  public List<A> unique() {
-    HashSet<A> set = new HashSet<A>();
-    foreach(el -> set.add(el));
-    A[] a = (A[]) new Object[] {};
-    return of(set.<A>toArray(a));
+  public static <A extends Comparable<A>> List<A> unique(List<A> list) {
+    return Set.of(list).toList();
   }
 
   @Override
